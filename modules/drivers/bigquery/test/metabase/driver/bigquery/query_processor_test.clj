@@ -1,25 +1,22 @@
 (ns metabase.driver.bigquery.query-processor-test
-  (:require [clojure
-             [string :as str]
-             [test :refer :all]]
-            [honeysql
-             [core :as hsql]
-             [format :as hformat]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer :all]
+            [honeysql.core :as hsql]
+            [honeysql.format :as hformat]
             [java-time :as t]
-            [metabase
-             [driver :as driver]
-             [models :refer [Database Field]]
-             [query-processor :as qp]
-             [query-processor-test :as qp.test]
-             [sync :as sync]
-             [test :as mt]
-             [util :as u]]
+            [metabase.driver :as driver]
             [metabase.driver.bigquery :as bigquery]
             [metabase.driver.bigquery.query-processor :as bigquery.qp]
             [metabase.driver.sql.query-processor :as sql.qp]
+            [metabase.models :refer [Database Field Table]]
+            [metabase.query-processor :as qp]
+            [metabase.query-processor-test :as qp.test]
             [metabase.query-processor.store :as qp.store]
+            [metabase.sync :as sync]
+            [metabase.test :as mt]
             [metabase.test.data.bigquery :as bigquery.tx]
             [metabase.test.util.timezone :as tu.tz]
+            [metabase.util :as u]
             [metabase.util.honeysql-extensions :as hx]
             [toucan.util.test :as tt]))
 
@@ -135,25 +132,25 @@
 
 (deftest join-alias-test
   (mt/test-driver :bigquery
-    (is (= (str "SELECT `categories__via__category_id`.`name` AS `name`,"
+    (testing (str "Make sure that BigQuery properly aliases the names generated for Join Tables. It's important to use "
+                  "the right alias, e.g. something like `categories__via__category_id`, which is considerably "
+                  "different  what other SQL databases do. (#4218)"))
+    (is (= (str "SELECT `categories__via__category_id`.`name` AS `categories__via__category_id__name`,"
                 " count(*) AS `count` "
                 "FROM `v3_test_data.venues` "
                 "LEFT JOIN `v3_test_data.categories` `categories__via__category_id`"
                 " ON `v3_test_data.venues`.`category_id` = `categories__via__category_id`.`id` "
-                "GROUP BY `name` "
-                "ORDER BY `name` ASC")
+                "GROUP BY `categories__via__category_id__name` "
+                "ORDER BY `categories__via__category_id__name` ASC")
            ;; normally for test purposes BigQuery doesn't support foreign keys so override the function that checks
            ;; that and make it return `true` so this test proceeds as expected
            (with-redefs [driver/supports? (constantly true)]
              (mt/with-temp-vals-in-db Field (mt/id :venues :category_id) {:fk_target_field_id (mt/id :categories :id)
-                                                                            :special_type       "type/FK"}
+                                                                          :special_type       "type/FK"}
                (let [results (mt/run-mbql-query venues
                                {:aggregation [:count]
                                 :breakout    [$category_id->categories.name]})]
-                 (get-in results [:data :native_form :query] results)))))
-        (str "make sure that BigQuery properly aliases the names generated for Join Tables. It's important to use the "
-             "right alias, e.g. something like `categories__via__category_id`, which is considerably different from "
-             "what other SQL databases do. (#4218)"))))
+                 (get-in results [:data :native_form :query] results))))))))
 
 (defn- native-timestamp-query [db-or-db-id timestamp-str timezone-str]
   (-> (qp/process-query
@@ -188,7 +185,6 @@
                (native-timestamp-query db "2018-08-31 00:00:00+07" "Asia/Jakarta"))))
         "Similar to the above test, but covers a positive offset")))
 
-
 ;; if I run a BigQuery query, does it get a remark added to it?
 (defn- query->native [query]
   (let [native-query (atom nil)]
@@ -196,12 +192,7 @@
                                              (reset! native-query sql)
                                              (throw (Exception. "Done.")))]
       (u/ignore-exceptions
-        (qp/process-query {:database (mt/id)
-                           :type     :query
-                           :query    {:source-table (mt/id :venues)
-                                      :limit        1}
-                           :info     {:executed-by 1000
-                                      :query-hash  (byte-array [1 2 3 4])}}))
+        (qp/process-query query))
       @native-query)))
 
 (deftest remark-test
@@ -225,6 +216,32 @@
              :info     {:executed-by 1000
                         :query-hash  (byte-array [1 2 3 4])}}))
         "if I run a BigQuery query, does it get a remark added to it?")))
+
+;; if I run a BigQuery query with include-user-id-and-hash set to false, does it get a remark added to it?
+(deftest remove-remark-test
+  (mt/test-driver :bigquery
+    (is (=  (str
+            "SELECT `v3_test_data.venues`.`id` AS `id`,"
+            " `v3_test_data.venues`.`name` AS `name` "
+            "FROM `v3_test_data.venues` "
+            "LIMIT 1")
+    (tt/with-temp* [Database [db {:engine :bigquery
+                                  :details (assoc (:details (mt/db))
+                                                  :include-user-id-and-hash false)}]
+                    Table    [table {:name "venues" :db_id (u/get-id db)}]
+                    Field    [_     {:table_id (u/get-id table)
+                                    :name "id"
+                                    :base_type "type/Integer"}]
+                    Field    [_     {:table_id (u/get-id table)
+                                    :name "name"
+                                    :base_type "type/Text"}]]
+      (query->native
+        {:database (u/get-id db)
+        :type     :query
+        :query    {:source-table (u/get-id table)
+                    :limit        1}
+        :info     {:executed-by 1000
+                    :query-hash  (byte-array [1 2 3 4])}}))))))
 
 (deftest unprepare-params-test
   (mt/test-driver :bigquery
@@ -651,5 +668,52 @@
                (mt/formatted-rows [int]
                  (qp/process-query
                   (mt/native-query
-                    {:query  "SELECT count(*) AS `count` FROM `v3_test_data.venues` WHERE `v3_test_data.venues`.`name` = ?"
+                    {:query  (str "SELECT count(*) AS `count` "
+                                  "FROM `v3_test_data.venues` "
+                                  "WHERE `v3_test_data.venues`.`name` = ?")
                      :params ["x\\\\' OR 1 = 1 -- "]})))))))))
+
+(deftest ->valid-field-identifier-test
+  (testing "`->valid-field-identifier` should generate valid field identifiers"
+    (testing "no need to change anything"
+      (is (= "abc"
+             (#'bigquery.qp/->valid-field-identifier "abc"))))
+    (testing "replace spaces with underscores"
+      (is (= "A_B_C_0ef78513"
+             (#'bigquery.qp/->valid-field-identifier "A B C"))))
+    (testing "trim spaces"
+      (is (= "A_B_61f5f1b3"
+             (#'bigquery.qp/->valid-field-identifier " A B "))))
+    (testing "diacritical marks"
+      (is (= "Organizacao_6c2736cd"
+             (#'bigquery.qp/->valid-field-identifier "Organização")))
+      (testing "we should generate unique suffixes for different strings that get normalized to the same thing"
+        (is (= "Organizacao_f3d24ea0"
+               (#'bigquery.qp/->valid-field-identifier "Organizacaó")))))
+    (testing "cannot start with a number"
+      (is (= "_123_202cb962"
+             (#'bigquery.qp/->valid-field-identifier "123"))))
+    (testing "replace non-letter characters with underscores"
+      (is (= "__02612e19"
+             (#'bigquery.qp/->valid-field-identifier "😍")))
+      (testing "we should generate unique suffixes for different strings that get normalized to the same thing"
+        (is (= "__e88ec744"
+               (#'bigquery.qp/->valid-field-identifier "🥰")))))
+    (testing "trim long strings"
+      (is (= (str (str/join (repeat 119 "a")) "_4e5475d1")
+             (#'bigquery.qp/->valid-field-identifier (str/join (repeat 300 "a"))))))))
+
+(deftest remove-diacriticals-from-field-aliases-test
+  (mt/test-driver :bigquery
+    (testing "We should remove diacriticals and other disallowed characters from field aliases (#14933)"
+      (mt/with-bigquery-fks
+        (let [query (mt/mbql-query checkins
+                      {:fields [$id $venue_id->venues.name]})]
+          (mt/with-temp-vals-in-db Table (mt/id :venues) {:name "Organização"}
+            (is (= (str "SELECT `v3_test_data.checkins`.`id` AS `id`,"
+                        " `Organização__via__venue_id`.`name` AS `Organizacao__via__venue_id__name_560a3449` "
+                        "FROM `v3_test_data.checkins` "
+                        "LEFT JOIN `v3_test_data.Organização` `Organização__via__venue_id`"
+                        " ON `v3_test_data.checkins`.`venue_id` = `Organização__via__venue_id`.`id` "
+                        "LIMIT 1048576")
+                   (:query (qp/query->native query))))))))))

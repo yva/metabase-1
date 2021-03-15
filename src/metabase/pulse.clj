@@ -1,29 +1,29 @@
 (ns metabase.pulse
   "Public API for sending Pulses."
   (:require [clojure.tools.logging :as log]
-            [metabase
-             [email :as email]
-             [query-processor :as qp]
-             [util :as u]]
+            [metabase.api.card :as card-api]
+            [metabase.email :as email]
             [metabase.email.messages :as messages]
             [metabase.integrations.slack :as slack]
-            [metabase.middleware.session :as session]
-            [metabase.models
-             [card :refer [Card]]
-             [database :refer [Database]]
-             [pulse :as pulse :refer [Pulse]]]
+            [metabase.models.card :refer [Card]]
+            [metabase.models.dashboard :refer [Dashboard]]
+            [metabase.models.dashboard-card :refer [DashboardCard]]
+            [metabase.models.database :refer [Database]]
+            [metabase.models.pulse :as pulse :refer [Pulse]]
             [metabase.pulse.render :as render]
+            [metabase.query-processor :as qp]
+            [metabase.query-processor.middleware.permissions :as qp.perms]
             [metabase.query-processor.timezone :as qp.timezone]
-            [metabase.util
-             [i18n :refer [deferred-tru trs tru]]
-             [ui-logic :as ui]
-             [urls :as urls]]
+            [metabase.server.middleware.session :as session]
+            [metabase.util :as u]
+            [metabase.util.i18n :refer [deferred-tru trs tru]]
+            [metabase.util.ui-logic :as ui]
+            [metabase.util.urls :as urls]
             [schema.core :as s]
             [toucan.db :as db])
   (:import metabase.models.card.CardInstance))
 
 ;;; ------------------------------------------------- PULSE SENDING --------------------------------------------------
-
 
 ;; TODO - this is probably something that could live somewhere else and just be reused
 ;; TODO - this should be done async
@@ -33,24 +33,59 @@
   ;; The Card must either be executed in the context of a User or by the MetaBot which itself is not a User
   {:pre [(or (integer? pulse-creator-id)
              (= (:context options) :metabot))]}
-  (let [card-id (u/get-id card-or-id)]
+  (let [card-id (u/the-id card-or-id)]
     (try
       (when-let [{query :dataset_query, :as card} (Card :id card-id, :archived false)]
         (let [query         (assoc query :async? false)
               process-query (fn []
-                              (qp/process-query-and-save-with-max-results-constraints!
-                               query
-                               (merge {:executed-by pulse-creator-id
-                                       :context     :pulse
-                                       :card-id     card-id}
-                                      options)))]
-          {:card   card
-           :result (if pulse-creator-id
+                              (binding [qp.perms/*card-id* card-id]
+                                (qp/process-query-and-save-with-max-results-constraints!
+                                 query
+                                 (merge {:executed-by pulse-creator-id
+                                         :context     :pulse
+                                         :card-id     card-id}
+                                        options))))]
+          (let [result (if pulse-creator-id
                      (session/with-current-user pulse-creator-id
                        (process-query))
-                     (process-query))}))
+                     (process-query))]
+            {:card   card
+             :result result})))
       (catch Throwable e
         (log/warn e (trs "Error running query for Card {0}" card-id))))))
+
+(defn- execute-dashboard-subscription-card
+  [owner-id dashboard dashcard card-or-id]
+  (try
+    (let [card-id         (u/the-id card-or-id)
+          card            (Card :id card-id)
+          param-id->param (u/key-by :id (:parameters dashboard))
+          params          (for [mapping (:parameter_mappings dashcard)
+                                :when   (= (:card_id mapping) card-id)
+                                :let    [param (get param-id->param (:parameter_id mapping))]
+                                :when   param]
+                            (assoc param :target (:target mapping)))
+          result (session/with-current-user owner-id
+                   (card-api/run-query-for-card-async
+                    card-id :api
+                    :dashboard-id  (:id dashboard)
+                    :context       :pulse ; TODO - we should support for `:dashboard-subscription` and use that to differentiate the two
+                    :export-format :api
+                    :parameters    params
+                    :run (fn [query & args]
+                           (apply qp/process-query-and-save-with-max-results-constraints! (assoc query :async? false) args))))]
+      {:card card
+       :result result})
+    (catch Throwable e
+        (log/warn e (trs "Error running query for Card {0}" card-or-id)))))
+
+(defn execute-dashboard
+  "Execute all the cards in a dashboard for a Pulse"
+  [{pulse-creator-id :creator_id, :as pulse} dashboard-or-id & {:as options}]
+  (let [dashboard-id (u/get-id dashboard-or-id)
+        dashboard (Dashboard :id dashboard-id)]
+    (for [dashcard (db/select DashboardCard :dashboard_id dashboard-id, :card_id [:not= nil])]
+      (execute-dashboard-subscription-card pulse-creator-id dashboard dashcard (:card_id dashcard)))))
 
 (defn- database-id [card]
   (or (:database_id card)
@@ -134,6 +169,13 @@
     :alert
     :pulse))
 
+(defn- subject
+  [{:keys [name cards dashboard_id]}]
+  (if (or dashboard_id
+          (some :dashboard_id cards))
+    name
+    (trs "Pulse: {0}" name)))
+
 (defmulti ^:private should-send-notification?
   "Returns true if given the pulse type and resultset a new notification (pulse or alert) should be sent"
   (fn [pulse _results] (alert-or-pulse pulse)))
@@ -157,6 +199,9 @@
     (not (are-all-cards-empty? results))
     true))
 
+;; 'notification' used below means a map that has information needed to send a Pulse/Alert, including results of
+;; running the underlying query
+
 (defmulti ^:private notification
   "Polymorphoic function for creating notifications. This logic is different for pulse type (i.e. alert vs. pulse) and
   channel_type (i.e. email vs. slack)"
@@ -168,10 +213,9 @@
   [{pulse-id :id, pulse-name :name, :as pulse} results {:keys [recipients] :as channel}]
   (log/debug (u/format-color 'cyan (trs "Sending Pulse ({0}: {1}) with {2} Cards via email"
                                         pulse-id (pr-str pulse-name) (count results))))
-  (let [email-subject    (trs "Pulse: {0}" pulse-name)
-        email-recipients (filterv u/email? (map :email recipients))
+  (let [email-recipients (filterv u/email? (map :email recipients))
         timezone         (-> results first :card defaulted-timezone)]
-    {:subject      email-subject
+    {:subject      (subject pulse)
      :recipients   email-recipients
      :message-type :attachments
      :message      (messages/render-pulse-email timezone pulse results)}))
@@ -181,7 +225,7 @@
   (log/debug (u/format-color 'cyan (trs "Sending Pulse ({0}: {1}) with {2} Cards via Slack"
                                         pulse-id (pr-str pulse-name) (count results))))
   {:channel-id  channel-id
-   :message     (str "Pulse: " pulse-name)
+   :message     (subject pulse)
    :attachments (create-slack-attachment-data results)})
 
 (defmethod notification [:alert :email]
@@ -220,14 +264,20 @@
             :when   (contains? (set channel-ids) (:id channel))]
         (notification pulse results channel)))))
 
-(defn- pulse->notifications [{:keys [cards], pulse-id :id, :as pulse}]
-  (let [results (for [card  cards
-                      ;; Pulse ID may be `nil` if the Pulse isn't saved yet
-                      :let  [result (execute-card pulse (u/get-id card), :pulse-id pulse-id)]
-                      ;; some cards may return empty results, e.g. if the card has been archived
-                      :when result]
-                  result)]
-    (results->notifications pulse results)))
+(defn- pulse->notifications
+  "Execute the underlying queries for a sequence of Pulses and return the results as 'notification' maps."
+  [{:keys [cards dashboard_id], pulse-id :id, :as pulse}]
+  (results->notifications pulse
+                          (if dashboard_id
+                            ;; send the dashboard
+                            (execute-dashboard pulse dashboard_id)
+                            ;; send the cards instead
+                            (for [card  cards
+                                  ;; Pulse ID may be `nil` if the Pulse isn't saved yet
+                                  :let  [result (execute-card pulse (u/the-id card), :pulse-id pulse-id)]
+                                  ;; some cards may return empty results, e.g. if the card has been archived
+                                  :when result]
+                              result))))
 
 
 ;;; +----------------------------------------------------------------------------------------------------------------+

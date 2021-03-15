@@ -15,9 +15,8 @@ function toggleFieldWithDisplayName(displayName) {
 }
 
 describe("scenarios > admin > databases > add", () => {
-  before(restore);
-
   beforeEach(() => {
+    restore();
     signInAsAdmin();
     cy.server();
   });
@@ -32,16 +31,23 @@ describe("scenarios > admin > databases > add", () => {
 
     cy.visit("/admin/databases/create");
 
+    // Instead of bloating our test suite with a separate repro, this line will do
+    cy.log(
+      "**Repro for [metabase#14334](https://github.com/metabase/metabase/issues/14334)**",
+    );
+    cy.findByLabelText(
+      "Automatically run queries when doing simple filtering and summarizing",
+    ).should("have.attr", "aria-checked", "true");
+
     typeField("Name", "Test db name");
     typeField("Database name", "test_postgres_db");
     typeField("Username", "uberadmin");
 
-    cy.findByText("Save")
+    cy.findByRole("button", { name: "Save" })
       .should("not.be.disabled")
       .click();
 
     cy.wait("@createDatabase");
-
     cy.url().should("match", /\/admin\/databases\?created=42$/);
   });
 
@@ -52,11 +58,13 @@ describe("scenarios > admin > databases > add", () => {
     typeField("Database name", "test_postgres_db");
     typeField("Username", "uberadmin");
 
-    cy.findByText("Save").should("not.be.disabled");
+    cy.findByRole("button", { name: "Save" })
+      .should("not.be.disabled")
+      .click();
 
     toggleFieldWithDisplayName("let me choose when Metabase syncs and scans");
 
-    cy.findByText("Next")
+    cy.findByRole("button", { name: "Next" })
       .should("not.be.disabled")
       .click();
 
@@ -75,17 +83,17 @@ describe("scenarios > admin > databases > add", () => {
     typeField("Database name", "test_postgres_db");
     typeField("Username", "uberadmin");
 
-    cy.findByText("Save").should("not.be.disabled");
+    cy.findByRole("button", { name: "Save" }).should("not.be.disabled");
 
     toggleFieldWithDisplayName("let me choose when Metabase syncs and scans");
 
-    cy.findByText("Next")
+    cy.findByRole("button", { name: "Next" })
       .should("not.be.disabled")
       .click();
 
     cy.findByText("Never, I'll do this manually if I need to").click();
 
-    cy.findByText("Save").click();
+    cy.findByRole("button", { name: "Save" }).click();
 
     cy.wait("@createDatabase").then(({ request }) => {
       expect(request.body.engine).to.equal("postgres");
@@ -94,8 +102,7 @@ describe("scenarios > admin > databases > add", () => {
     });
 
     cy.url().should("match", /\/admin\/databases\?created=42$/);
-
-    cy.findByText("Your database has been added!").should("exist");
+    cy.findByText("Your database has been added!");
   });
 
   it("should show error correctly on server error", () => {
@@ -113,10 +120,9 @@ describe("scenarios > admin > databases > add", () => {
     typeField("Database name", "test_postgres_db");
     typeField("Username", "uberadmin");
 
-    cy.findByText("Save").click();
+    cy.findByRole("button", { name: "Save" }).click();
 
     cy.wait("@createDatabase");
-
     cy.findByText("DATABASE CONNECTION ERROR").should("exist");
   });
 
@@ -160,7 +166,7 @@ describe("scenarios > admin > databases > add", () => {
       }).as("createDatabase");
 
       // submit form and check that the file's body is included
-      cy.contains("Save").click();
+      cy.findByRole("button", { name: "Save" }).click();
       cy.wait("@createDatabase").should(xhr => {
         expect(xhr.request.body.details["service-account-json"]).to.equal(
           '{"foo": 123}',
@@ -190,7 +196,6 @@ describe("scenarios > admin > databases > add", () => {
       cy.visit("/admin/databases/123");
 
       cy.contains("Connect to a Service Account instead");
-
       cy.contains("generate a Client ID and Client Secret for your project");
     });
   });

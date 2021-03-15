@@ -1,4 +1,9 @@
-import { restore, signInAsNormalUser, sidebar } from "__support__/cypress";
+import {
+  restore,
+  signInAsNormalUser,
+  sidebar,
+  popover,
+} from "__support__/cypress";
 
 describe("smoketest > user", () => {
   // Goal: user can use all the features of the simple question and notebook editor
@@ -6,8 +11,8 @@ describe("smoketest > user", () => {
   beforeEach(signInAsNormalUser);
 
   it("should be able to ask a custom questions", () => {
-    cy.visit("/question/new");
-
+    cy.visit("/");
+    cy.findByText("Ask a question").click();
     cy.findByText("Custom question").click();
     cy.findByText("Sample Dataset").click();
     cy.findByText("Products").click();
@@ -26,49 +31,52 @@ describe("smoketest > user", () => {
 
     cy.findByText("Visualize").click();
 
-    cy.get(".Icon-bar");
+    cy.icon("bar");
     cy.findAllByText("Vendor is not empty");
     cy.get("svg");
     cy.findByText("Visualization");
   });
 
-  it("should filter via both the header and notebook editor", () => {
+  it("should sort via both the header and notebook editor", () => {
     // Sorting by header
-
     cy.wait(1000)
       .get(".Icon-table2")
       .click();
     cy.get(".cellData")
       .eq(2)
-      .findByText("Durable Wool Toucan");
+      .as("firstTableCell");
 
-    cy.findAllByText("Average of Rating")
-      .last()
+    cy.get("@firstTableCell").contains("Aerodynamic Bronze Hat");
+
+    cy.get(".cellData")
+      .contains("Average of Rating")
       .click();
-    cy.get(".Icon-arrow_up").click();
 
-    cy.get(".TableInteractive-cellWrapper--firstColumn")
-      .last()
-      .findByText("Lightweight Steel Watch");
+    cy.icon("arrow_down").click();
+
+    cy.get("@firstTableCell").contains("Ergonomic Wool Bag");
 
     // Sorting by notebook editor
+    cy.icon("notebook").click();
 
-    cy.get(".Icon-notebook").click();
-    cy.get(".Icon-close")
-      .last()
-      .click();
+    cy.findByText("Sort")
+      .next() // not ideal, but at least we're making sure 'x' is related to 'Sort'
+      .within(() => {
+        cy.icon("close") // Remove previously applied sorting
+          .click();
+      });
 
+    // Add new sort (by Title)
     cy.findByText("Sort").click();
-    cy.findAllByText("Title")
-      .last()
-      .click();
+
+    popover().within(() => {
+      cy.findAllByText("Title").click();
+    });
     cy.findByText("Visualize").click();
 
-    cy.get(".TableInteractive-cellWrapper--firstColumn")
-      .last()
-      .contains("Durable Wool Toucan");
+    cy.get("@firstTableCell").contains("Aerodynamic Bronze Hat");
 
-    cy.get(".Icon-table2").click();
+    cy.icon("table2").click();
   });
 
   it("should filter via the sidebar, header, and notebook editor", () => {
@@ -94,11 +102,11 @@ describe("smoketest > user", () => {
 
     // Notebook editor filter
 
-    cy.get(".Icon-notebook").click();
+    cy.icon("notebook").click();
     cy.wait(1000)
       .get(".Icon-filter")
       .click();
-    cy.get(".Icon-int").click();
+    cy.icon("int").click();
     cy.findByText("Equal to").click();
     cy.findByText("Greater than or equal to").click();
     cy.get("input[placeholder='Enter a number']").type("5");
@@ -138,7 +146,7 @@ describe("smoketest > user", () => {
 
     // Can minimize Filter dispay in header
 
-    cy.get(".Icon-filter")
+    cy.icon("filter")
       .first()
       .click();
 
@@ -159,7 +167,7 @@ describe("smoketest > user", () => {
     cy.findAllByText("Summarize")
       .first()
       .click();
-    cy.get(".Icon-close")
+    cy.icon("close")
       .first()
       .click();
     cy.findByText("Done").click();
@@ -171,12 +179,12 @@ describe("smoketest > user", () => {
 
     // Notebook editor summary
 
-    cy.get(".Icon-notebook").click();
+    cy.icon("notebook").click();
 
-    cy.get(".Icon-sum").click();
+    cy.icon("sum").click();
     cy.findByText("Count of rows").click();
     cy.findByText("Pick a column to group by").click();
-    cy.get(".Icon-calendar").click();
+    cy.icon("calendar").click();
     cy.findByText("Visualize").click();
 
     cy.get("svg");
@@ -194,7 +202,7 @@ describe("smoketest > user", () => {
    */
 
   it.skip("should be able to create custom columns in the notebook editor", () => {
-    cy.get(".Icon-notebook").click();
+    cy.icon("notebook").click();
 
     // Delete last summary
     cy.findAllByText("Count")
@@ -209,7 +217,7 @@ describe("smoketest > user", () => {
     cy.findByText("Orders").click();
 
     // Create custom column
-    cy.get(".Icon-add_data").click();
+    cy.icon("add_data").click();
     cy.findByText("Product → Price").click();
     cy.findByText("-").click();
     cy.findByText("Subtotal").click();
@@ -223,7 +231,7 @@ describe("smoketest > user", () => {
     cy.findByText("Visualize").click();
 
     cy.findByText("ID");
-    cy.get(".Icon-table2");
+    cy.icon("table2");
     cy.wait(1000).findByText("Demo Column");
     cy.findByText("Products").should("not.exist");
   });
@@ -231,9 +239,9 @@ describe("smoketest > user", () => {
   it.skip("should be able to use all notebook editor functions", () => {
     // Custom JOINs
 
-    cy.get(".Icon-notebook").click();
+    cy.icon("notebook").click();
 
-    cy.get(".Icon-join_left_outer").click();
+    cy.icon("join_left_outer").click();
     cy.findByText("People").click(); // column selection happens automatcially
     cy.findByText("Visualize").click();
 
@@ -243,7 +251,7 @@ describe("smoketest > user", () => {
 
     // Setting Row limit
 
-    cy.get(".Icon-notebook").click();
+    cy.icon("notebook").click();
 
     cy.findByText("Row limit").click();
     cy.get("input[type='number']").type("10");
@@ -256,13 +264,13 @@ describe("smoketest > user", () => {
 
     // Can view the SQL query
 
-    cy.get(".Icon-notebook", { timeout: 20000 }).click();
-    cy.get(".Icon-sql")
+    cy.icon("notebook", { timeout: 20000 }).click();
+    cy.icon("sql")
       .last()
       .click();
 
     cy.contains('SELECT "source"."ID"');
-    cy.get(".Icon-close")
+    cy.icon("close")
       .last()
       .click();
   });
@@ -285,7 +293,7 @@ describe("smoketest > user", () => {
     cy.findByText("4");
     cy.findByText("3").should("not.exist");
 
-    cy.get(".Icon-close")
+    cy.icon("close")
       .last()
       .click();
 
@@ -293,7 +301,7 @@ describe("smoketest > user", () => {
 
     cy.findByText("Rating").click();
     cy.findByText("Distribution").click();
-    cy.get(".Icon-table2").click();
+    cy.icon("table2").click();
 
     cy.findByText("Count");
     cy.findByText("Created At").should("not.exist");
@@ -303,7 +311,7 @@ describe("smoketest > user", () => {
 
     // Refresh works
 
-    cy.get(".Icon-refresh")
+    cy.icon("refresh")
       .first()
       .click();
     // *** check that refresh has happened
@@ -325,11 +333,11 @@ describe("smoketest > user", () => {
 
     cy.findByText("ID").click();
 
-    cy.get(".Icon-arrow_up");
-    cy.get(".Icon-arrow_down");
+    cy.icon("arrow_up");
+    cy.icon("arrow_down");
     cy.findByText("Distincts");
     cy.findByText("Distribution").should("not.exist");
-    cy.get(".Icon-filter");
+    cy.icon("filter");
     cy.findByText("Formatting");
 
     // String column
@@ -338,11 +346,11 @@ describe("smoketest > user", () => {
       .last()
       .click();
 
-    cy.get(".Icon-arrow_up");
-    cy.get(".Icon-arrow_down");
+    cy.icon("arrow_up");
+    cy.icon("arrow_down");
     cy.findByText("Distincts");
     cy.findByText("Distribution");
-    cy.get(".Icon-filter");
+    cy.icon("filter");
     cy.findByText("Formatting");
     cy.get(".PopoverBody")
       .findByText("Sum")
@@ -354,20 +362,20 @@ describe("smoketest > user", () => {
       .last()
       .click();
 
-    cy.get(".Icon-arrow_up");
-    cy.get(".Icon-arrow_down");
+    cy.icon("arrow_up");
+    cy.icon("arrow_down");
     cy.findByText("Sum");
     cy.findByText("Min");
     cy.findByText("Max");
     cy.findByText("Distincts");
     cy.findByText("Sum over time");
     cy.findByText("Distribution");
-    cy.get(".Icon-filter");
+    cy.icon("filter");
     cy.findByText("Formatting");
 
     // Longitude column (first switch to people table)
 
-    cy.get(".Icon-notebook").click();
+    cy.icon("notebook").click();
     cy.findAllByText("Products")
       .last()
       .click();
@@ -376,15 +384,15 @@ describe("smoketest > user", () => {
 
     cy.findByText("Longitude").click();
 
-    cy.get(".Icon-arrow_up");
-    cy.get(".Icon-arrow_down");
+    cy.icon("arrow_up");
+    cy.icon("arrow_down");
     cy.findByText("Sum");
     cy.findByText("Min");
     cy.findByText("Max");
     cy.findByText("Distincts");
     cy.findByText("Sum over time");
     cy.findByText("Distribution");
-    cy.get(".Icon-filter");
+    cy.icon("filter");
     cy.findByText("Formatting");
 
     // Boolean column contians appropriate options

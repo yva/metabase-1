@@ -1,17 +1,16 @@
 (ns metabase.driver.common.parameters.values-test
   (:require [clojure.test :refer :all]
-            [metabase
-             [driver :as driver]
-             [models :refer [Card Collection NativeQuerySnippet]]
-             [query-processor :as qp]
-             [test :as mt]
-             [util :as u]]
+            [metabase.driver :as driver]
             [metabase.driver.common.parameters :as i]
             [metabase.driver.common.parameters.values :as values]
-            [metabase.models
-             [field :refer [map->FieldInstance]]
-             [permissions :as perms]
-             [permissions-group :as group]])
+            [metabase.models :refer [Card Collection NativeQuerySnippet]]
+            [metabase.models.field :refer [map->FieldInstance]]
+            [metabase.models.permissions :as perms]
+            [metabase.models.permissions-group :as group]
+            [metabase.query-processor :as qp]
+            [metabase.test :as mt]
+            [metabase.util :as u]
+            [metabase.query-processor.middleware.permissions :as qp.perms])
   (:import clojure.lang.ExceptionInfo))
 
 (deftest variable-value-test
@@ -254,10 +253,10 @@
       (mt/with-temp-copy-of-db
         (perms/revoke-permissions! (group/all-users) (mt/id))
         (mt/with-temp* [Collection [collection]
-                        Card       [{card-1-id :id, :as card-1} {:collection_id (u/get-id collection)
+                        Card       [{card-1-id :id, :as card-1} {:collection_id (u/the-id collection)
                                                                  :dataset_query (mt/mbql-query venues
                                                                                   {:order-by [[:asc $id]], :limit 2})}]
-                        Card       [card-2 {:collection_id (u/get-id collection)
+                        Card       [card-2 {:collection_id (u/the-id collection)
                                             :dataset_query (mt/native-query
                                                              {:query         "SELECT * FROM {{card}}"
                                                               :template-tags {"card" {:name         "card"
@@ -266,12 +265,11 @@
                                                                                       :card-id      card-1-id}}})}]]
           (perms/grant-collection-read-permissions! (group/all-users) collection)
           (mt/with-test-user :rasta
-            (is (= [[1 "Red Medicine"           4 10.0646 -165.374 3]
-                    [2 "Stout Burgers & Beers" 11 34.0996 -118.329 2]]
-                   (mt/rows
-                     (qp/process-userland-query (assoc (:dataset_query card-2)
-                                                       :info {:executed-by (mt/user->id :rasta)
-                                                              :card-id     (u/get-id card-2)})))))))))))
+            (binding [qp.perms/*card-id* (u/the-id card-2)]
+              (is (= [[1 "Red Medicine"           4 10.0646 -165.374 3]
+                      [2 "Stout Burgers & Beers" 11 34.0996 -118.329 2]]
+                     (mt/rows
+                       (qp/process-query (:dataset_query card-2))))))))))))
 
 (deftest card-query-errors-test
   (testing "error conditions for :card parameters"
@@ -327,12 +325,28 @@
 
 (deftest dont-be-too-strict-test
   (testing "values-for-tag should allow unknown keys (used only by FE) (#13868)"
-    (is (= "2"
-           (#'values/value-for-tag
-            {:name                "id"
-             :display-name        "ID"
-             :type                :text
-             :required            true
-             :default             "100"
-             :filteringParameters "222b245f"}
-            [{:type :category, :target [:variable [:template-tag "id"]], :value "2"}])))))
+    (testing "\nUnknown key 'filteringParameters'"
+      (testing "in tag"
+        (is (= "2"
+               (#'values/value-for-tag
+                {:name                "id"
+                 :display-name        "ID"
+                 :type                :text
+                 :required            true
+                 :default             "100"
+                 :filteringParameters "222b245f"}
+                [{:type   :category
+                  :target [:variable [:template-tag "id"]]
+                  :value  "2"}]))))
+      (testing "in params"
+        (is (= "2"
+               (#'values/value-for-tag
+                {:name         "id"
+                 :display-name "ID"
+                 :type         :text
+                 :required     true
+                 :default      "100"}
+                [{:type                :category
+                  :target              [:variable [:template-tag "id"]]
+                  :value               "2"
+                  :filteringParameters "222b245f"}])))))))

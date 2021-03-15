@@ -3,26 +3,21 @@
             [clojure.test :refer :all]
             [expectations :refer [expect]]
             [java-time :as t]
-            [metabase
-             [models :refer [Card Collection Database Field Metric Table]]
-             [test :as mt]]
             [metabase.api.common :as api]
-            [metabase.automagic-dashboards
-             [core :as magic :refer :all]
-             [rules :as rules]]
+            [metabase.automagic-dashboards.core :as magic :refer :all]
+            [metabase.automagic-dashboards.rules :as rules]
             [metabase.mbql.schema :as mbql.s]
-            [metabase.models
-             [field :as field]
-             [permissions :as perms]
-             [permissions-group :as perms-group]
-             [query :as query]]
+            [metabase.models :refer [Card Collection Database Field Metric Table]]
+            [metabase.models.field :as field]
+            [metabase.models.permissions :as perms]
+            [metabase.models.permissions-group :as perms-group]
+            [metabase.models.query :as query]
             [metabase.query-processor.async :as qp.async]
-            [metabase.test
-             [automagic-dashboards :refer :all]
-             [util :as tu]]
-            [metabase.util
-             [date-2 :as u.date]
-             [i18n :refer [tru]]]
+            [metabase.test :as mt]
+            [metabase.test.automagic-dashboards :refer :all]
+            [metabase.test.util :as tu]
+            [metabase.util.date-2 :as u.date]
+            [metabase.util.i18n :refer [tru]]
             [toucan.db :as db]
             [toucan.util.test :as tt]))
 
@@ -515,6 +510,6 @@
 (deftest handlers-test
   (testing "Make sure we have handlers for all the units available"
     (doseq [unit (disj (set (concat u.date/extract-units u.date/truncate-units))
-                       :iso-day-of-week :iso-day-of-year :iso-week :iso-week-of-year :millisecond)]
+                       :iso-day-of-year :millisecond)]
       (testing unit
         (is (some? (#'magic/humanize-datetime "1990-09-09T12:30:00" unit)))))))

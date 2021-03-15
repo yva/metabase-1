@@ -72,5 +72,6 @@ target/checksum.txt
 xcshareddata
 xcuserdata
 dev/src/dev/nocommit/
+**/cypress_sample_dataset.json
 .lsp
 !plugins/clickhouse.metabase-driver.jar

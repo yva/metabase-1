@@ -2,19 +2,19 @@
   "Tests for the logic behind scheduling the various sync operations of Databases. Most of the actual logic we're
   testing is part of `metabase.models.database`, so there's an argument to be made that these sorts of tests could
   just as easily belong to a `database-test` namespace."
-  (:require [clojure
-             [string :as str]
-             [test :refer :all]]
-            [metabase
-             [test :as mt]
-             [util :as u]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer :all]
+            [java-time :as t]
             [metabase.models.database :refer [Database]]
-            [metabase.sync
-             [analyze :as sync.analyze]
-             [field-values :as sync.field-values]
-             [sync-metadata :as sync.metadata]]
+            [metabase.sync.analyze :as sync.analyze]
+            [metabase.sync.field-values :as sync.field-values]
+            [metabase.sync.schedules :as sync.schedules]
+            [metabase.sync.sync-metadata :as sync.metadata]
             [metabase.task.sync-databases :as sync-db]
+            [metabase.test :as mt]
             [metabase.test.util :as tu]
+            [metabase.util :as u]
+            [metabase.util.cron :as cron-util]
             [metabase.util.date-2 :as u.date]
             [toucan.db :as db])
   (:import [metabase.task.sync_databases SyncAndAnalyzeDatabase UpdateFieldValues]))
@@ -139,7 +139,11 @@
                (db/update! Database (u/get-id database)
                  k "2 CANS PER DAY"))))))))
 
-(defrecord MockJobExecutionContext [job-data-map]
+;; this is a deftype due to an issue with Clojure. The `org.quartz.JobExecutionContext` interface has a put method and
+;; defrecord emits a put method and things get
+;; funky. https://ask.clojure.org/index.php/9943/defrecord-can-emit-invalid-bytecode
+;; https://www.quartz-scheduler.org/api/2.1.7/org/quartz/JobExecutionContext.html#put(java.lang.Object,%20java.lang.Object)
+(deftype MockJobExecutionContext [job-data-map]
   org.quartz.JobExecutionContext
   (getMergedJobDataMap [this] (org.quartz.JobDataMap. job-data-map))
 
@@ -226,3 +230,57 @@
                :is_full_sync                false
                :metadata_sync_schedule      (cron-schedule-for-next-year)
                :cache_field_values_schedule "* * * * * ? *"})))))
+
+(def should-refingerprint #'sync-db/should-refingerprint-fields?)
+(def threshold @#'sync-db/analyze-duration-threshold-for-refingerprinting)
+
+(defn results [minutes-duration fingerprints-attempted]
+  (let [now (t/instant)
+        end (t/plus now (t/minutes minutes-duration))]
+    {:start-time now
+     :end-time end
+     :steps
+     [["fingerprint-fields"
+       {:no-data-fingerprints 0,
+        :failed-fingerprints 0,
+        :updated-fingerprints fingerprints-attempted,
+        :fingerprints-attempted fingerprints-attempted,
+        :start-time #t "2020-11-03T18:02:10.826813Z[UTC]",
+        :end-time #t "2020-11-03T18:02:10.864099Z[UTC]"}]]
+     :name "analyze"}))
+
+(deftest should-refingeprint-fields?-test
+  (testing "If it took too long it doesn't fingerprint"
+    (is (not (should-refingerprint (results (inc threshold) 1)))))
+  (testing "If it fingerprinted other fields it doesn't fingerprint"
+    (is (not (should-refingerprint (results (dec threshold) 10)))))
+  (testing "It will fingerprint if under time and no other fingerprints"
+    (is (should-refingerprint (results (dec threshold) 0)))))
+
+(deftest randomized-schedules-test
+  (testing "when user schedules it does not return new schedules"
+    (is (nil? (sync-db/randomized-schedules {:details {:let-user-control-scheduling true}}))))
+  (testing "when schedules are already 'randomized' it returns nil"
+    (is (nil? (sync-db/randomized-schedules
+                {:cache_field_values_schedule (cron-util/schedule-map->cron-string
+                                                {:schedule_hour 17 :schedule_type "daily"})
+                 :metadata_sync_schedule      (cron-util/schedule-map->cron-string
+                                                {:schedule_minute 17 :schedule_type "hourly"})}))))
+  (testing "returns appropriate randomized schedules"
+    (doseq [default-metadata sync.schedules/default-metadata-sync-schedule-cron-strings]
+      (is (contains? (sync-db/randomized-schedules
+                       {:metadata_sync_schedule      default-metadata
+                        :cache_field_values_schedule (cron-util/schedule-map->cron-string
+                                                       {:schedule_hour 17 :schedule_type "daily"})})
+                     :metadata_sync_schedule)))
+    (doseq [default-cache sync.schedules/default-cache-field-values-schedule-cron-strings]
+      (is (contains? (sync-db/randomized-schedules
+                       {:metadata_sync_schedule      (cron-util/schedule-map->cron-string
+                                                       {:schedule_hour 17 :schedule_type "hourly"})
+                        :cache_field_values_schedule default-cache})
+                     :cache_field_values_schedule)))
+    (is (schema= {:metadata_sync_schedule      String
+                  :cache_field_values_schedule String}
+                 (sync-db/randomized-schedules
+                   {:metadata_sync_schedule      (first sync.schedules/default-metadata-sync-schedule-cron-strings)
+                    :cache_field_values_schedule (first sync.schedules/default-cache-field-values-schedule-cron-strings)})))))

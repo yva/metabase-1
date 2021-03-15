@@ -18,6 +18,10 @@ const DATABASE_DETAIL_OVERRIDES = {
     title: t`Use the Java Virtual Machine (JVM) timezone`,
     description: t`We suggest you leave this off unless you're doing manual timezone casting in many or most of your queries with this data.`,
   }),
+  "include-user-id-and-hash": (engine, details, id) => ({
+    title: t`Include User ID and query hash in queries`,
+    description: t`When on, Metabase User ID and query hash get appended to queries on this database, which can be useful for auditing and debugging. However, this causes each query to look distinct, preventing BigQuery from returning cached results, which may increase your costs.`,
+  }),
   "use-srv": (engine, details, id) => ({
     title: t`Use DNS SRV when connecting`,
     description: t`Using this option requires that provided host is a FQDN.  If connecting to an Atlas cluster, you might need to enable this option.  If you don't know what this means, leave this disabled.`,
@@ -278,7 +282,6 @@ const forms = {
         type: "boolean",
         title: t`Automatically run queries when doing simple filtering and summarizing`,
         description: t`When this is on, Metabase will automatically run queries when users do simple explorations with the Summarize and Filter buttons when viewing a table or chart. You can turn this off if querying this database is slow. This setting doesn’t affect drill-throughs or SQL queries.`,
-        initial: true,
         hidden: !engine,
       },
       {
@@ -286,6 +289,13 @@ const forms = {
         type: "boolean",
         title: t`This is a large database, so let me choose when Metabase syncs and scans`,
         description: t`By default, Metabase does a lightweight hourly sync and an intensive daily scan of field values. If you have a large database, we recommend turning this on and reviewing when and how often the field value scans happen.`,
+        hidden: !engine,
+      },
+      {
+        name: "refingerprint",
+        type: "boolean",
+        title: t`Periodically refingerprint tables`,
+        description: t`When syncing with this database, Metabase will scan a subset of values of fields to gather statistics that enable things like improved binning behavior in charts, and to generally make your Metabase instance smarter.`,
         hidden: !engine,
       },
       { name: "is_full_sync", type: "hidden" },
@@ -310,12 +320,10 @@ const forms = {
     ],
     normalize: function(database) {
       if (!database.details["let-user-control-scheduling"]) {
-        // If we don't let user control the scheduling settings, let's override them with Metabase defaults
         // TODO Atte Keinänen 8/15/17: Implement engine-specific scheduling defaults
         return {
           ...database,
           is_full_sync: true,
-          schedules: DEFAULT_SCHEDULES,
         };
       } else {
         return database;

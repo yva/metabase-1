@@ -2,15 +2,13 @@
   (:require [cheshire.core :as json]
             [clojure.core.memoize :as memoize]
             [clojure.tools.logging :as log]
-            [honeysql.core :as hsql]
-            [metabase
-             [db :as mdb]
-             [util :as u]]
+            [metabase.db.connection :as mdb.connection]
             [metabase.mbql.normalize :as normalize]
-            [metabase.util
-             [cron :as cron-util]
-             [encryption :as encryption]
-             [i18n :refer [trs tru]]]
+            [metabase.plugins.classloader :as classloader]
+            [metabase.util :as u]
+            [metabase.util.cron :as cron-util]
+            [metabase.util.encryption :as encryption]
+            [metabase.util.i18n :refer [trs tru]]
             [potemkin.types :as p.types]
             [schema.core :as s]
             [taoensso.nippy :as nippy]
@@ -159,17 +157,15 @@
 
 ;; use now() for Postgres and H2. now() for MySQL/MariaDB only returns second resolution. So use now(6) which uses the
 ;; max (nanosecond) resolution.
-(def ^:private now
-  (delay
-    (case (mdb/db-type)
-      :mysql (hsql/call :now 6)
-      :%now)))
+(defn- now []
+  (classloader/require 'metabase.driver.sql.query-processor)
+  ((resolve 'metabase.driver.sql.query-processor/current-datetime-honeysql-form) (mdb.connection/db-type)))
 
 (defn- add-created-at-timestamp [obj & _]
-  (assoc obj :created_at @now))
+  (assoc obj :created_at (now)))
 
 (defn- add-updated-at-timestamp [obj & _]
-  (assoc obj :updated_at @now))
+  (assoc obj :updated_at (now)))
 
 (models/add-property! :timestamped?
   :insert (comp add-created-at-timestamp add-updated-at-timestamp)

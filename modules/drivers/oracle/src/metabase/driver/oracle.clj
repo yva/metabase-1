@@ -3,26 +3,25 @@
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [honeysql.core :as hsql]
+            [honeysql.format :as hformat]
             [java-time :as t]
             [metabase.driver :as driver]
-            [metabase.driver
-             [common :as driver.common]
-             [sql :as sql]]
-            [metabase.driver.sql
-             [query-processor :as sql.qp]
-             [util :as sql.u]]
-            [metabase.driver.sql-jdbc
-             [connection :as sql-jdbc.conn]
-             [execute :as sql-jdbc.execute]
-             [sync :as sql-jdbc.sync]]
+            [metabase.driver.common :as driver.common]
+            [metabase.driver.sql :as sql]
+            [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
+            [metabase.driver.sql-jdbc.execute :as sql-jdbc.execute]
+            [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]
+            [metabase.driver.sql.query-processor :as sql.qp]
+            [metabase.driver.sql.util :as sql.u]
             [metabase.driver.sql.util.unprepare :as unprepare]
-            [metabase.util
-             [honeysql-extensions :as hx]
-             [i18n :refer [trs]]
-             [ssh :as ssh]])
+            [metabase.util :as u]
+            [metabase.util.honeysql-extensions :as hx]
+            [metabase.util.i18n :refer [trs]]
+            [metabase.util.ssh :as ssh])
   (:import com.mchange.v2.c3p0.C3P0ProxyConnection
            [java.sql Connection ResultSet Types]
            [java.time Instant OffsetDateTime ZonedDateTime]
+           metabase.util.honeysql_extensions.Identifier
            [oracle.jdbc OracleConnection OracleTypes]
            oracle.sql.TIMESTAMPTZ))
 
@@ -90,6 +89,11 @@
   [_]
   :sunday)
 
+;; Oracle mod is a function like mod(x, y) rather than an operator like x mod y
+(defmethod hformat/fn-handler (u/qualified-name ::mod)
+  [_ x y]
+  (format "mod(%s, %s)" (hformat/to-sql x) (hformat/to-sql y)))
+
 (defn- trunc
   "Truncate a date. See also this [table of format
   templates](http://docs.oracle.com/cd/B28359_01/olap.111/b28126/dml_functions_2071.htm#CJAEFAIA)
@@ -106,23 +110,33 @@
 (defmethod sql.qp/date [:oracle :day]            [_ _ v] (trunc :dd v))
 (defmethod sql.qp/date [:oracle :day-of-month]   [_ _ v] (hsql/call :extract :day v))
 ;; [SIC] The format template for truncating to start of week is 'day' in Oracle #WTF
-(defmethod sql.qp/date [:oracle :week]           [_ _ v] (sql.qp/adjust-start-of-week :oracle (partial trunc :day) v))
 (defmethod sql.qp/date [:oracle :month]          [_ _ v] (trunc :month v))
 (defmethod sql.qp/date [:oracle :month-of-year]  [_ _ v] (hsql/call :extract :month v))
 (defmethod sql.qp/date [:oracle :quarter]        [_ _ v] (trunc :q v))
 (defmethod sql.qp/date [:oracle :year]           [_ _ v] (trunc :year v))
 
-(defmethod sql.qp/date [:oracle :day-of-year] [driver _ v]
+(defmethod sql.qp/date [:oracle :week]
+  [driver _ v]
+  (sql.qp/adjust-start-of-week driver (partial trunc :day) v))
+
+(defmethod sql.qp/date [:oracle :day-of-year]
+  [driver _ v]
   (hx/inc (hx/- (sql.qp/date driver :day v) (trunc :year v))))
 
-(defmethod sql.qp/date [:oracle :quarter-of-year] [driver _ v]
+(defmethod sql.qp/date [:oracle :quarter-of-year]
+  [driver _ v]
   (hx// (hx/+ (sql.qp/date driver :month-of-year (sql.qp/date driver :quarter v))
               2)
         3))
 
 ;; subtract number of days between today and first day of week, then add one since first day of week = 1
-(defmethod sql.qp/date [:oracle :day-of-week] [driver _ v]
-  (sql.qp/adjust-day-of-week :oracle (hx/->integer (hsql/call :to_char v (hx/literal :d)))))
+(defmethod sql.qp/date [:oracle :day-of-week]
+  [driver _ v]
+  (sql.qp/adjust-day-of-week
+   driver
+   (hx/->integer (hsql/call :to_char v (hx/literal :d)))
+   (driver.common/start-of-week-offset driver)
+   (partial hsql/call (u/qualified-name ::mod))))
 
 (def ^:private now (hsql/raw "SYSDATE"))
 
@@ -131,6 +145,30 @@
 (defn- num-to-ds-interval [unit v] (hsql/call :numtodsinterval v (hx/literal unit)))
 (defn- num-to-ym-interval [unit v] (hsql/call :numtoyminterval v (hx/literal unit)))
 
+(def ^:private legacy-max-identifier-length
+  "Maximal identifier length for Oracle < 12.2"
+  30)
+
+(defn- truncate-identifier
+  [identifier]
+  (->> identifier
+       hash
+       str
+       (map (fn [digit]
+              (-> digit
+                  int
+                  (+ 65)
+                  char)))
+       (apply str "identifier_")))
+
+(defmethod sql.qp/->honeysql [:oracle Identifier]
+  [_ identifier]
+  (let [field-identifier (last (:components identifier))]
+    (if (> (count field-identifier) legacy-max-identifier-length)
+      (update identifier :components (fn [components]
+                                       (concat (butlast components)
+                                               [(truncate-identifier field-identifier)])))
+      identifier)))
 
 (defmethod sql.qp/->honeysql [:oracle :substring]
   [driver [_ arg start length]]
@@ -167,9 +205,21 @@
   (hx/+ (hsql/raw "timestamp '1970-01-01 00:00:00 UTC'")
         (num-to-ds-interval :second field-or-value)))
 
+(defmethod sql.qp/cast-temporal-string [:oracle :type/ISO8601DateTimeString]
+  [_driver _special_type expr]
+  (hsql/call :to_timestamp expr "YYYY-MM-DD HH:mi:SS"))
+
+(defmethod sql.qp/cast-temporal-string [:oracle :type/ISO8601DateString]
+  [_driver _special_type expr]
+  (hsql/call :to_date expr "YYYY-MM-DD"))
+
 (defmethod sql.qp/unix-timestamp->honeysql [:oracle :milliseconds]
   [driver _ field-or-value]
   (sql.qp/unix-timestamp->honeysql driver :seconds (hx// field-or-value (hsql/raw 1000))))
+
+(defmethod sql.qp/unix-timestamp->honeysql [:oracle :microseconds]
+  [driver _ field-or-value]
+  (sql.qp/unix-timestamp->honeysql driver :seconds (hx// field-or-value (hsql/raw 1000000))))
 
 ;; Oracle doesn't support `LIMIT n` syntax. Instead we have to use `WHERE ROWNUM <= n` (`NEXT n ROWS ONLY` isn't
 ;; supported on Oracle versions older than 12). This has to wrap the actual query, e.g.

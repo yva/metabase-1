@@ -1,23 +1,26 @@
 import {
   signInAsAdmin,
   restore,
-  withSampleDataset,
   withDatabase,
   visitAlias,
   popover,
 } from "__support__/cypress";
 
+import { SAMPLE_DATASET } from "__support__/cypress_sample_dataset";
+
+const { ORDERS, ORDERS_ID } = SAMPLE_DATASET;
+
 // [quarantine] - intermittently failing, possibly due to a "flickering" element (re-rendering)
 describe.skip("scenarios > admin > datamodel > field", () => {
   beforeEach(() => {
     signInAsAdmin();
-    withSampleDataset(({ ORDERS, ORDERS_ID }) => {
-      ["CREATED_AT", "PRODUCT_ID", "QUANTITY"].forEach(name => {
-        cy.wrap(
-          `/admin/datamodel/database/1/table/${ORDERS_ID}/${ORDERS[name]}/general`,
-        ).as(`ORDERS_${name}_URL`);
-      });
+
+    ["CREATED_AT", "PRODUCT_ID", "QUANTITY"].forEach(name => {
+      cy.wrap(
+        `/admin/datamodel/database/1/table/${ORDERS_ID}/${ORDERS[name]}/general`,
+      ).as(`ORDERS_${name}_URL`);
     });
+
     cy.server();
     cy.route("PUT", "/api/field/*").as("fieldUpdate");
     cy.route("POST", "/api/field/*/dimension").as("fieldDimensionUpdate");
@@ -145,7 +148,8 @@ describe.skip("scenarios > admin > datamodel > field", () => {
       cy.contains("Title");
     });
 
-    it("allows 'Custom mapping' null values", () => {
+    // [quarantined]: flake, blocking 3rd party PR
+    it.skip("allows 'Custom mapping' null values", () => {
       restore("withSqlite");
       signInAsAdmin();
       const dbId = 2;

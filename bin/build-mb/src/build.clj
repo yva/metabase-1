@@ -4,9 +4,8 @@
             [clojure.string :as str]
             [environ.core :as env]
             [flatland.ordered.map :as ordered-map]
-            [metabuild-common
-             [core :as u]
-             [java :as java]]))
+            [metabuild-common.core :as u]
+            [metabuild-common.java :as java]))
 
 (defn- build-translation-resources!
   []
@@ -16,21 +15,23 @@
     (u/announce "Translation resources built successfully.")))
 
 (defn- edition-from-env-var []
-  ;; MB_EDITION is either oss/ee, but the Clojure build scripts currently use :ce/:ee
-  (if-not (env/env :mb-edition)
-    :ce
-    (case (env/env :mb-edition)
-      "oss" :ce
-      "ee"  :ee)))
+  (case (env/env :mb-edition)
+    "oss" :oss
+    "ee"  :ee
+    nil   :oss))
 
 (defn- build-frontend! [edition]
-  {:pre [(#{:ce :ee} edition)]}
+  {:pre [(#{:oss :ee} edition)]}
   (let [mb-edition (case edition
                      :ee "ee"
-                     :ce "oss")]
+                     :oss "oss")]
     (u/step (format "Build frontend with MB_EDITION=%s" mb-edition)
       (u/step "Run 'yarn' to download javascript dependencies"
-        (u/sh {:dir u/project-root-directory} "yarn"))
+        (if (env/env :ci)
+          (do
+            (u/announce "CI run: enforce the lockfile")
+            (u/sh {:dir u/project-root-directory} "yarn" "--frozen-lockfile"))
+          (u/sh {:dir u/project-root-directory} "yarn")))
       (u/step "Run 'webpack' with NODE_ENV=production to assemble and minify frontend assets"
         (u/sh {:dir u/project-root-directory
                :env {"PATH"       (env/env :path)
@@ -43,17 +44,13 @@
 (def uberjar-filename (u/filename u/project-root-directory "target" "uberjar" "metabase.jar"))
 
 (defn- build-uberjar! [edition]
-  {:pre [(#{:ce :ee} edition)]}
-  ;; clojure scripts currently use :ee vs :ce but everything else uses :ee vs :oss
-  (let [profile (case edition
-                  :ee "ee"
-                  :ce "oss")]
-    (u/delete-file-if-exists! uberjar-filename)
-    (u/step (format "Build uberjar with profile %s" profile)
-      (u/sh {:dir u/project-root-directory} "lein" "clean")
-      (u/sh {:dir u/project-root-directory} "lein" "with-profile" (str \+ profile) "uberjar")
-      (u/assert-file-exists uberjar-filename)
-      (u/announce "Uberjar built successfully."))))
+  {:pre [(#{:oss :ee} edition)]}
+  (u/delete-file-if-exists! uberjar-filename)
+  (u/step (format "Build uberjar with profile %s" edition)
+    (u/sh {:dir u/project-root-directory} "lein" "clean")
+    (u/sh {:dir u/project-root-directory} "lein" "with-profile" (str \+ (name edition)) "uberjar")
+    (u/assert-file-exists uberjar-filename)
+    (u/announce "Uberjar built successfully.")))
 
 (def all-steps
   (ordered-map/ordered-map
@@ -63,8 +60,8 @@
                    (build-translation-resources!))
    :frontend     (fn [{:keys [edition]}]
                    (build-frontend! edition))
-   :drivers      (fn [_]
-                   (build-drivers/build-drivers!))
+   :drivers      (fn [{:keys [edition]}]
+                   (build-drivers/build-drivers! edition))
    :uberjar      (fn [{:keys [edition]}]
                    (build-uberjar! edition))))
 
@@ -74,11 +71,11 @@
 
   ([{:keys [version edition steps]
      :or   {version (version-info/current-snapshot-version)
-            edition :ce
+            edition :oss
             steps   (keys all-steps)}}]
    (u/step (format "Running build steps for %s version %s: %s"
                    (case edition
-                     :ce "Community (OSS) Edition"
+                     :oss "Community (OSS) Edition"
                      :ee "Enterprise Edition")
                    version
                    (str/join ", " (map name steps)))
