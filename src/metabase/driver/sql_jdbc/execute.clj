@@ -158,7 +158,7 @@
       (set-best-transaction-level! driver conn)
       (set-time-zone-if-supported! driver conn timezone-id)
       (try
-        (.setReadOnly conn true)
+        (.setReadOnly conn false)
         (catch Throwable e
           (log/debug e (trs "Error setting connection to read-only"))))
       (try

@@ -41,7 +41,6 @@
 /modules/drivers/*/target
 /node_modules/
 /osx-artifacts
-/plugins
 /process.yml
 /reset-password-artifacts
 /resources/frontend_client/app/dist/
@@ -73,3 +72,5 @@ target/checksum.txt
 xcshareddata
 xcuserdata
 dev/src/dev/nocommit/
+.lsp
+!plugins/clickhouse.metabase-driver.jar
