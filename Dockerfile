@@ -80,6 +80,7 @@ COPY --from=builder /app/source/plugins /app/plugins
 # permissions to driver
 RUN chmod 744 /app/plugins/clickhouse.metabase-driver.jar
 
+RUN apk --no-cache add curl
 # expose our default runtime port
 EXPOSE 3000
 
