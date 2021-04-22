@@ -1,12 +1,9 @@
-name: CI Dev
+name: CI Prod
 
 on:
-  pull_request:
-    branches:
-      - '*'
   push:
-    branches:
-      - 'master'
+    tags:
+      - "metabase-1-yva-*"
 
 jobs:
   build:
@@ -15,19 +12,11 @@ jobs:
       SERVICE_NAME: yva-metabase-fork
       DOCKERFILE: ./Dockerfile
       CONTEXT: .
-
     steps:
-
       - name: Checkout
         uses: actions/checkout@v2
 
-      - name: Parse Git (dev)
-        shell: bash
-        run: |
-          branh_name=$(echo ${GITHUB_REF#refs/heads/} | tr / -)
-          echo "BRANCH_NAME=${branh_name}" >> $GITHUB_ENV
-          echo "BUILD_VERSION_SHORT=${branh_name}:$(git rev-parse --short "$GITHUB_SHA")" >> $GITHUB_ENV
-      - name: Publish to Dev CR
+      - name: Publish to Prod CR
         uses: elgohr/Publish-Docker-Github-Action@3.02
         with:
           name: ${{ env.SERVICE_NAME }}/${{ env.BRANCH_NAME }}
@@ -36,5 +25,4 @@ jobs:
           registry: ${{ secrets.DOCKER_DEV_CR }}
           dockerfile: ${{ env.DOCKERFILE }}
           context: ${{ env.CONTEXT }}
-          tags: "latest"
           buildargs: BUILD_VERSION_SHORT
