@@ -34,7 +34,7 @@ jobs:
           username: ${{ secrets.DOCKER_DEV_CR_USER }}
           password: ${{ secrets.DOCKER_DEV_CR_PASSWORD }}
           registry: ${{ secrets.DOCKER_DEV_CR }}
-#          dockerfile: ${{ env.DOCKERFILE }}
-#          context: ${{ env.CONTEXT }}
+          dockerfile: ${{ env.DOCKERFILE }}
+          context: ${{ env.CONTEXT }}
           tags: "latest"
           buildargs: BUILD_VERSION_SHORT
